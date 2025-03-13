@@ -108,7 +108,7 @@ agent = PPO(state_dim, hidden_dim, action_dim, actor_lr, critic_lr, lmbda,
 start = time.time()
 return_list = rl_utils.train_on_policy_agent(env, agent, num_episodes)
 print("used time(s): ", time.time() - start)
-save_path = f"ppo_cartpole_policy_update_final.pth"
+save_path = f"./weights/ppo_cartpole_policy_update_final.pth"
 torch.save(agent.actor.state_dict(), save_path)
 print(f"Model saved to {save_path}")
 

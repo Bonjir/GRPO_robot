@@ -171,7 +171,7 @@ for i_episode in tqdm(range(episode_num)):
         break
 print("used_time(s): ", time.time() - start)
 
-save_path = f"grpo_cartpole_policy_update_final.pth"
+save_path = f"./weights/grpo_cartpole_policy_update_final.pth"
 torch.save(policy.state_dict(), save_path)
 print(f"Model saved to {save_path}")
 

@@ -136,4 +136,4 @@ def test_model(model_path, num_episodes=10):
 
 if __name__ == '__main__':
     # 请确保模型文件路径正确
-    test_model("ppo_cartpole_policy_update_final.pth", num_episodes=10)
+    test_model("./weights/ppo_cartpole_policy_update_final.pth", num_episodes=10)
