@@ -133,7 +133,7 @@ def grpo_update(trajectories, net, optimizer, n_iterations=20, eps=0.2):
     return loss.item()  # 不返回任何内容
 
 # [1] 初始化和初始设置
-num_envs = 50
+num_envs = 25
 env_name = 'CartPole-v1'
 envs = gym.vector.make(env_name,num_envs=num_envs)
 state_dim = envs.single_observation_space.shape[0]  # 4
@@ -145,13 +145,13 @@ max_steps = 500
 # [2] 设置使用GRPO更新PolicyNet时的轨迹积累次数
 trajectories_per_update = num_envs  # group size
 # [3] 进行100次episode循环，直到平均奖励超过195
-episode_num = 100  # 尝试次数
+episode_num = 200  # 尝试次数
 start = time.time()
 count = 0
 return_list = []
 # [4] 开始100次episode循环
 for i_episode in tqdm(range(episode_num)):  
-    # [5] 使用GRPO积累轨迹（5次episode）
+    # [5] 使用GRPO积累轨迹（25次episode）
     trajectories,episode_rewards = collect_trajectory_vectorized(envs,policy,max_steps,device=device)
 
     # [6] 使用GRPO更新PolicyNet的权重
