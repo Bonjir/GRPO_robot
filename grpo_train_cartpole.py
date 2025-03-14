@@ -7,6 +7,7 @@ import torch
 from torch.nn import functional as F
 import gym
 from torch.distributions import Categorical
+import numpy as np
 
 class PolicyNet(torch.nn.Module):
     def __init__(self,state_dim,action_dim):
@@ -20,30 +21,29 @@ class PolicyNet(torch.nn.Module):
         return F.softmax(logits,dim=1)
     
 
-def collect_trajectory_vectorized(envs, policy_net, num_steps=200, gamma=0.99, device="cpu"):
+def collect_trajectory_vectorized(envs, policy_net, trajectory_max_steps=500, device="cpu"):
     """
     从 vectorized 环境并行采样多个轨迹，计算归一化奖励
     envs: 并行环境 (vectorized environment)
     policy_net: 策略网络 (PolicyNet)
-    num_steps: 每条轨迹最大步数
-    gamma: 折扣因子
+    trajectory_max_steps: 每条轨迹最大步数
 
     返回：
         states, log_probs, actions, normalized_rewards
     """
-    num_envs = envs.num_envs  # 获取并行环境数量
-    states = envs.reset()  # shape: [num_envs, state_dim]
+    group_size = envs.num_envs  # 获取并行环境数量
+    states = envs.reset()  # shape: [group_size, state_dim]
 
     all_states = []
     all_actions = []
     all_log_probs = []
-    all_rewards = torch.zeros(num_envs)  # shape: [num_envs]
-    all_dones = torch.tensor([False] * num_envs)  # shape: [num_envs]
-    for t in range(num_steps):
-        states_tensor = torch.tensor(states, dtype=torch.float32,device=device)  # shape: [num_envs, state_dim]
-        probs = policy_net(states_tensor)  # shape: [num_envs, num_actions]
+    all_rewards = torch.zeros(group_size)  # shape: [group_size]
+    all_dones = torch.tensor([False] * group_size)  # shape: [group_size]
+    for t in range(trajectory_max_steps):
+        states_tensor = torch.tensor(states, dtype=torch.float32,device=device)  # shape: [group_size, state_dim]
+        probs = policy_net(states_tensor)  # shape: [group_size, num_actions]
         dist = Categorical(probs)
-        actions = dist.sample()  # shape: [num_envs]
+        actions = dist.sample()  # shape: [group_size]
         log_probs = dist.log_prob(actions).detach()
 
         # 执行环境步进
@@ -55,19 +55,18 @@ def collect_trajectory_vectorized(envs, policy_net, num_steps=200, gamma=0.99, d
         all_dones[dones] = True # 如果环境结束，则标记为True
         rewards[all_dones] = 0 # 如果环境结束，则奖励为0
         rewards += -abs(next_states[:, 0])   # 添加惩罚项，使小车尽量靠近中心
-        all_rewards += rewards  # shape: [num_envs]
-
+        all_rewards += rewards  # shape: [group_size]
 
         states = next_states
-        if torch.all(all_dones):  # 如果所有环境都结束，则停止t
+        if torch.all(all_dones):  # 如果所有环境都结束，则停止
             break
-    normalized_rewards = (all_rewards / num_steps).to(device)
+    normalized_rewards = (all_rewards / trajectory_max_steps).to(device)
     all_states = torch.tensor(all_states).permute(1,0,2).to(device)
     all_log_probs = torch.stack(all_log_probs).permute(1,0).to(device)
     all_actions = torch.stack(all_actions).permute(1,0).to(device)
     trajectories = {"all_states":all_states,"all_log_probs": all_log_probs,
                     "all_actions": all_actions,"normalized_rewards": normalized_rewards}
-    episode_rewards = (normalized_rewards * num_steps)
+    episode_rewards = (normalized_rewards * trajectory_max_steps)
     return trajectories,episode_rewards
 
 def calc_advantages_with_grpo(trajectories):
@@ -108,56 +107,53 @@ def grpo_update(trajectories, net, optimizer, n_iterations=20, eps=0.2):
         # # 计算总损失
         # loss = torch.mean(trajectory_loss)
         # Method 2
-        for i in range(len(all_states)):
+        for i in range(batch_size):
             states = all_states[i]
             log_probs = all_log_probs[i]
             chosen_actions = all_chosen_actions[i]
             advantage = advantages[i]
-            trajectory_loss = 0                            # 初始化1个episode的损失为0
+            trajectory_loss = 0                         
             new_log_probs = torch.log(net(states).gather(1,chosen_actions.unsqueeze(1)))
             ratio = torch.exp(new_log_probs - log_probs.unsqueeze(1))
             surr1 = ratio * advantage
             surr2 = torch.clamp(ratio, 1 - eps,
                                 1 + eps) * advantage  # 截断
-            trajectory_loss = torch.mean(-torch.min(surr1, surr2))  # PPO损失函数            
+            trajectory_loss = torch.mean(-torch.min(surr1, surr2))       
             loss += trajectory_loss
 
-        # [5] 用episode数进行归一化
+        # [3] 用episode数进行归一化
         loss /= batch_size
 
-        # [6] 更新Policy NN的权重
+        # [4] 更新Policy NN的权重
         optimizer.zero_grad()
         loss.backward()
         optimizer.step()
 
-    return loss.item()  # 不返回任何内容
+    return loss.item() 
 
 # [1] 初始化和初始设置
-num_envs = 10
+group_size = 10
 env_name = 'CartPole-v1'
-envs = gym.vector.make(env_name,num_envs=num_envs)
+envs = gym.vector.make(env_name,num_envs=group_size)
 state_dim = envs.single_observation_space.shape[0]  # 4
 n_actions = envs.single_action_space.n  # 2
 device = torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
 policy = PolicyNet(state_dim, n_actions).to(device)
 optimizer = torch.optim.Adam(policy.parameters(), lr=0.02)
-max_steps = 500
-# [2] 设置使用GRPO更新PolicyNet时的轨迹积累次数
-trajectories_per_update = num_envs  # group size
-# [3] 进行100次episode循环，直到平均奖励超过195
 episode_num = 50  # 尝试次数
-start = time.time()
-count = 0
+trajectory_max_steps = 500 #每条轨迹最长的探索步数
 return_list = []
-# [4] 开始100次episode循环
-for i_episode in tqdm(range(episode_num)):  
-    # [5] 使用GRPO积累轨迹（25次episode）
-    trajectories,episode_rewards = collect_trajectory_vectorized(envs,policy,max_steps,device=device)
 
-    # [6] 使用GRPO更新PolicyNet的权重
+start = time.time()
+# [2] 开始50次episode循环
+for i_episode in tqdm(range(episode_num)):  
+    # [3] 使用GRPO积累轨迹（10次episode）
+    trajectories,episode_rewards = collect_trajectory_vectorized(envs,policy,trajectory_max_steps,device=device)
+
+    # [4] 使用GRPO更新PolicyNet的权重
     loss = grpo_update(trajectories, policy, optimizer)
     
-    # [7] 计算平均奖励
+    # [5] 计算平均奖励
     avg_reward = sum(episode_rewards) / len(episode_rewards)
     return_list.append(avg_reward.cpu().numpy())
     # if i_episode !=0 and i_episode % 20 == 0:
@@ -165,8 +161,8 @@ for i_episode in tqdm(range(episode_num)):
     #     torch.save(policy.state_dict(), save_path)
     #     print(f"Model saved to {save_path}")
     print(f'第 {i_episode} 次试验, avg reward: {avg_reward:.2f}')    
-    # # [8] 提前结束判定
-    # if avg_reward > max_steps-5:
+    # # [7] 提前结束判定
+    # if avg_reward > trajectory_max_steps-5:
     #     print('训练完成。试验次数: ', i_episode)
     #     break
 print("used_time(s): ", time.time() - start)
@@ -174,7 +170,7 @@ print("used_time(s): ", time.time() - start)
 save_path = f"./weights/grpo_cartpole_policy_update_final.pth"
 torch.save(policy.state_dict(), save_path)
 print(f"Model saved to {save_path}")
-
+#绘图
 episodes_list = list(range(len(return_list)))
 plt.plot(episodes_list, return_list)
 plt.xlabel('Episodes')
