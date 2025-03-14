@@ -133,19 +133,19 @@ def grpo_update(trajectories, net, optimizer, n_iterations=20, eps=0.2):
     return loss.item()  # 不返回任何内容
 
 # [1] 初始化和初始设置
-num_envs = 25
+num_envs = 10
 env_name = 'CartPole-v1'
 envs = gym.vector.make(env_name,num_envs=num_envs)
 state_dim = envs.single_observation_space.shape[0]  # 4
 n_actions = envs.single_action_space.n  # 2
 device = torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
 policy = PolicyNet(state_dim, n_actions).to(device)
-optimizer = torch.optim.Adam(policy.parameters(), lr=0.001)
+optimizer = torch.optim.Adam(policy.parameters(), lr=0.02)
 max_steps = 500
 # [2] 设置使用GRPO更新PolicyNet时的轨迹积累次数
 trajectories_per_update = num_envs  # group size
 # [3] 进行100次episode循环，直到平均奖励超过195
-episode_num = 200  # 尝试次数
+episode_num = 50  # 尝试次数
 start = time.time()
 count = 0
 return_list = []
@@ -165,10 +165,10 @@ for i_episode in tqdm(range(episode_num)):
     #     torch.save(policy.state_dict(), save_path)
     #     print(f"Model saved to {save_path}")
     print(f'第 {i_episode} 次试验, avg reward: {avg_reward:.2f}')    
-    # [8] 提前结束判定
-    if avg_reward > max_steps-5:
-        print('训练完成。试验次数: ', i_episode)
-        break
+    # # [8] 提前结束判定
+    # if avg_reward > max_steps-5:
+    #     print('训练完成。试验次数: ', i_episode)
+    #     break
 print("used_time(s): ", time.time() - start)
 
 save_path = f"./weights/grpo_cartpole_policy_update_final.pth"
